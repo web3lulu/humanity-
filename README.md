@@ -1,5 +1,5 @@
 # humanity protocol掌纹签到
-humanity protocol掌纹签到
+humanity protocol掌纹签到 包括每日奖励和推荐奖励
 
 ## 使用说明
 
@@ -8,12 +8,12 @@ humanity protocol掌纹签到
 
 2. 配置私钥
 - 创建 keys.txt 文件
-- 将私钥写入文件
+- 将私钥写入文件(一行一个)
 
 
 ## 联系方式
 
-- Twitter: [@999BTC999](https://x.com/999BTC999)
+- Twitter: [求个关注](https://x.com/999BTC999)
 
 ## 注意事项
 
