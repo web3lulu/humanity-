@@ -3,27 +3,34 @@ from eth_account import Account
 import json
 import time
 from web3.exceptions import ContractLogicError
+import random
+from datetime import datetime
 
-def read_private_key():
-    try:
-        with open('keys.txt', 'r') as file:
-            return file.read().strip()
-    except FileNotFoundError:
-        print("错误：找不到 keys.txt 文件")
-        exit(1)
-    except Exception as e:
-        print(f"读取私钥时发生错误: {str(e)}")
-        exit(1)
+
+def read_private_keys():
+    """读取所有私钥并编号"""
+    private_keys = []
+    with open('keys.txt', 'r') as file:
+        for index, line in enumerate(file, 1):
+            if line.strip():
+                print(f"读取第 {index} 个私钥")
+                private_keys.append(line.strip())
+    return private_keys
+
+
+def log_failure(address, reward_type):
+    """记录失败信息到日志"""
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open('log.txt', 'a', encoding='utf-8') as file:
+        file.write(f"{current_time} - 地址 {address} {reward_type}领取失败\n")
+
 
 # 配置信息
-PRIVATE_KEY = read_private_key()  # 从 keys.txt 文件读取私钥
-REWARDS_CONTRACT = '0xa18f6FCB2Fd4884436d10610E69DB7BFa1bFe8C7'  # Rewards合约地址
+REWARDS_CONTRACT = '0xa18f6FCB2Fd4884436d10610E69DB7BFa1bFe8C7'
 RPC_URL = 'https://rpc.testnet.humanity.org'
+CHAIN_ID = 1942999413
 
-# 其他配置
-CHAIN_ID = 1942999413  # Humanity Testnet 的链 ID
-
-# Rewards合约ABI，只包含我们需要的函数
+# 更新 ABI，添加 buffer 相关函数
 ABI = [
     {
         "inputs": [],
@@ -31,100 +38,148 @@ ABI = [
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "claimBuffer",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [{"internalType": "address", "name": "user", "type": "address"}],
+        "name": "userBuffer",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
     }
 ]
 
-def setup_web3():
-    w3 = Web3(Web3.HTTPProvider(RPC_URL))
-    account = Account.from_key(PRIVATE_KEY)
-    return w3, account
 
-def claim_reward(w3, account):
+def check_buffer(w3, contract, address):
+    """检查是否有推荐奖励"""
     try:
-        # 创建合约实例
-        contract = w3.eth.contract(address=REWARDS_CONTRACT, abi=ABI)
-        
-        # 先检查是否可以领取
+        buffer = contract.functions.userBuffer(address).call()
+        print(f"推荐奖励检查结果: {buffer}")  # 显示检查结果
+        return buffer > 0
+    except Exception:
+        print("检查推荐奖励失败")
+        return False
+
+
+def claim_daily_reward(w3, account, private_key, contract):
+    """领取每日奖励"""
+    try:
         try:
             contract.functions.claimReward().call({'from': account.address})
         except ContractLogicError as e:
-            error_msg = str(e)
-            print("\n领取检查失败，原因：")
-            if "Too early" in error_msg:
-                print("- 距离上次领取时间未满24小时")
-                try:
-                    # 尝试获取上次领取时间
-                    last_claim = contract.functions.lastClaimTime(account.address).call()
-                    next_claim = last_claim + (24 * 60 * 60)
-                    remaining = next_claim - int(time.time())
-                    print(f"- 还需等待: {remaining//3600}小时{(remaining%3600)//60}分钟")
-                except:
-                    pass
-            elif "no rewards available" in error_msg:
-                print("- 当前没有可领取的奖励")
-                print("- 请确认您是否满足领取条件")
-            else:
-                print(f"- 具体错误: {error_msg}")
-            raise  # 继续抛出异常
-            
-        # 获取当前 gas 估算
+            print(f"每日奖励检查失败")
+            raise
+
+        # 添加 gas 估算
         estimated_gas = contract.functions.claimReward().estimate_gas({'from': account.address})
-        print(f"估算需要的 gas: {estimated_gas}")
-        
-        # 构建交易
+        print(f"每日奖励预估 gas: {estimated_gas}")
+
         nonce = w3.eth.get_transaction_count(account.address)
-        
         transaction = contract.functions.claimReward().build_transaction({
             'from': account.address,
             'nonce': nonce,
-            'gas': 300000,
-            'gasPrice': 0,  # Humanity Testnet 的 gas 价格为 0
+            'gas': estimated_gas,  # 使用估算的 gas
+            'gasPrice': 0,
             'chainId': CHAIN_ID
         })
-        
-        # 签名交易
-        signed_txn = w3.eth.account.sign_transaction(transaction, PRIVATE_KEY)
-        
-        # 发送交易
+
+        signed_txn = w3.eth.account.sign_transaction(transaction, private_key)
         tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
-        print(f"交易已发送，交易哈希: {tx_hash.hex()}")
-        
-        # 等待交易确认
+        print(f"每日奖励交易已发送，哈希: {tx_hash.hex()}")
+
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        if receipt['status'] == 1:
+            print(f"实际使用 gas: {receipt['gasUsed']}")  # 显示实际使用的 gas
         return receipt
-        
     except Exception as e:
-        print("\n交易失败，详细信息：")
-        print(f"- 错误类型: {type(e).__name__}")
-        print(f"- 错误消息: {str(e)}")
-        if hasattr(e, 'args') and len(e.args) > 0:
-            print(f"- 额外信息: {e.args[0]}")
-        raise  # 继续抛出异常给主循环处理
+        print(f"每日奖励领取失败: {str(e)}")
+        return None
+
+
+def claim_referral_reward(w3, account, private_key, contract):
+    """领取推荐奖励"""
+    try:
+        # 添加 gas 估算
+        estimated_gas = contract.functions.claimBuffer().estimate_gas({'from': account.address})
+        print(f"推荐奖励预估 gas: {estimated_gas}")
+
+        nonce = w3.eth.get_transaction_count(account.address)
+        transaction = contract.functions.claimBuffer().build_transaction({
+            'from': account.address,
+            'nonce': nonce,
+            'gas': estimated_gas,  # 使用估算的 gas
+            'gasPrice': 0,
+            'chainId': CHAIN_ID
+        })
+
+        signed_txn = w3.eth.account.sign_transaction(transaction, private_key)
+        tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
+        print(f"推荐奖励交易已发送，哈希: {tx_hash.hex()}")
+
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        if receipt['status'] == 1:
+            print(f"实际使用 gas: {receipt['gasUsed']}")  # 显示实际使用的 gas
+        return receipt
+    except Exception as e:
+        print(f"\n推荐奖励领取失败: {str(e)}")
+        log_failure(account.address, "推荐奖励")
+        return None
+
 
 def main():
-    w3, account = setup_web3()
-    print(f"使用账户地址: {account.address}")
-    
-    while True:
+    private_keys = read_private_keys()
+    print(f"总共读取到 {len(private_keys)} 个私钥")
+    random.shuffle(private_keys)
+    print("已随机打乱执行顺序")
+
+    w3 = Web3(Web3.HTTPProvider(RPC_URL))
+    contract = w3.eth.contract(address=REWARDS_CONTRACT, abi=ABI)
+
+    for i, private_key in enumerate(private_keys, 1):
         try:
-            print("\n开始尝试领取奖励...")
-            receipt = claim_reward(w3, account)
-            
+            account = Account.from_key(private_key)
+            print(f"\n正在处理第 {i}/{len(private_keys)} 个钱包")
+            print(f"钱包地址: {account.address}")
+
+            # 检查并领取每日奖励
+            receipt = claim_daily_reward(w3, account, private_key, contract)
             if receipt and receipt['status'] == 1:
-                print("\n奖励领取成功！")
-                print("等待24小时后进行下一次领取")
-                time.sleep(24 * 60 * 60)
+                print("每日奖励领取成功！")
             else:
-                print("\n交易失败或出错")
-                print("5分钟后重试...")
-                time.sleep(300)
-                
+                log_failure(account.address, "每日奖励")
+
+            wait_time = random.randint(1, 3)
+            time.sleep(wait_time)
+
+            # 检查是否有推荐奖励
+            if check_buffer(w3, contract, account.address):
+                print("发现推荐奖励，尝试领取...")
+                buffer_receipt = claim_referral_reward(w3, account, private_key, contract)
+                if buffer_receipt and buffer_receipt['status'] == 1:
+                    print("推荐奖励领取成功！")
+                else:
+                    print("推荐奖励领取失败")
+                    log_failure(account.address, "推荐奖励")
+            else:
+                print("没有可领取的推荐奖励")
+
+            if i < len(private_keys):
+                wait_time = random.randint(30, 60)
+                print(f"等待 {wait_time} 秒后处理下一个钱包...")
+                time.sleep(wait_time)
+
         except Exception as e:
-            print(f"\n程序运行错误:")
-            print(f"- 错误类型: {type(e).__name__}")
-            print(f"- 错误信息: {str(e)}")
-            print("5分钟后重试...")
-            time.sleep(300)
+            print(f"处理失败: {str(e)}")
+            log_failure(account.address, "处理")
+
+    print("\n所有钱包处理完成")
+
 
 if __name__ == "__main__":
     main()
